@@ -530,7 +530,9 @@ extract_archives() {
                 ;;
             *.rar)
                 log_info "Extracting RAR: $filename"
-                if unrar x -o+ "$file" "$dest" >/dev/null 2>&1; then
+                # unrar x -ro+ "$file" "$dest"
+                
+                if unrar x -ro+ "$file" "$dest" >/dev/null 2>&1; then
                     ((COUNT_EXTRACTED++))
                 else
                     ((COUNT_EXTRACT_FAILED++))
