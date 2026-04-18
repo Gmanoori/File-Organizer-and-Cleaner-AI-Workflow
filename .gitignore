@@ -1,3 +1,6 @@
 Sample/
 Data/
 Output/
+venvs/
+__pycache__/
+.env

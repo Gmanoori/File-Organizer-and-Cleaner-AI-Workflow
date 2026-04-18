@@ -1,0 +1,66 @@
+In real time data(CSV, XLS, XLSX, JSON), we need to find if there are comma injections or null values anywhere and then find out the deviation % based on amount of mangling. Suggest strategies to calculate the metrics 
+
+1) Parse every row and count delimiter tokens. Flag rows where field count deviates from the modal (most-common) count — comma injection silently adds columns. deviation% = (|rows_with_wrong_field_count| / total_rows) × 100
+
+2) For each column, establish a value-type distribution baseline (int%, float%, string%, null%). Flag columns whose live type ratio drifts beyond 2σ from baseline. z = (live_null% − μ_null) / σ_null → deviation% = (z / z_max) × 100
+
+3) Deploy a per-column pattern registry (phone, email, ID, currency). Any value violating its expected pattern is a mangled cell. Score the violation rate. deviation% = (pattern_violations / non_null_values) × 100
+
+4) Validate inter-column logical consistency. Injected commas shift values left — an amount lands in a currency column, a name lands in an ID column. Score incoherence. deviation% = (cross_field_violations / expected_valid_pairs) × 100
+
+Extra: Δentropy% = |H(t) − H(t-1)| / H_max × 100
+
+
+Run this now:
+python .\data_integrity_scanner_spark.py "E:\Ganesh-Projects\File-Organizer-and-Cleaner-AI-Workflow\Sample\Sample Output\file_inventory.csv" "E:\Ganesh-Projects\File-Organizer-and-Cleaner-AI-Workflow\Sample\Sample Output\file_inventory_deviation_final.csv"
+
+
+Analyze the current project structure, coding conventions, existing Spark utilities, and any CSV ingestion patterns already in use. Then implement a CSV header detection and classification feature that fits naturally into the codebase.
+
+Specifically:
+
+1. **Scan the project first**
+   - Identify where Spark sessions are initialized
+   - Find existing CSV read utilities or ingestion pipelines
+   - Note the code style (typing hints, docstrings, class vs functional patterns, logging approach)
+   - Check if there's a config or constants file for schema definitions
+
+2. **Implement `looks_like_header(row_values, expected_columns=None) -> bool`**
+   - If `expected_columns` is provided, do a case-insensitive exact match
+   - Otherwise use a heuristic: flag a row as a header if ≥70% of its values are non-numeric and non-date strings
+   - Match the docstring and type-hint style used elsewhere in the project
+   - Here we have multiple files with differing schemas, so there is not going to be any predefined schema for each file
+
+3. **Implement `read_and_classify_csv(file_path, expected_columns=None) -> tuple[DataFrame, bool]`**
+   - Read raw with `header=false` to inspect the first row
+   - Call `looks_like_header` on it
+   - Re-read the file correctly based on detection result
+   - Append a `header_status` column with value `"has_header"` or `"no_header"`
+   - Use the project's existing Spark session accessor (do not create a new one if one already exists)
+   - Use the project's logger if one is configured
+
+4. **Implement `enrich_column_by_header_status(df, target_col, has_header) -> DataFrame`**
+   - Update `target_col` by prefixing `"VERIFIED_"` if header detected, `"RAW_"` otherwise
+   - Use `F.when/otherwise` pattern
+
+5. **Wire it in**
+   - If there is an existing CSV ingestion entry point, integrate the detection there
+   - If there are schema/column config files, use them as the `expected_columns` source
+   - Add unit tests following the existing test structure and framework (pytest/unittest)
+
+6. **Do not**
+   - Create a new SparkSession if one is already managed elsewhere
+   - Deviate from the project's import style or folder structure
+   - Add new dependencies unless unavoidable
+
+
+
+What if all are names? Something like this: 
+
+[{"name": "AADIL ZAFAR", "type": "str", "nullable": true}, {"name": "MD YUNUS ZAFAR", "type": "str", "nullable": true}, {"name": "aadilzafar84@yahoo.com", "type": "str", "nullable": true}, {"name": "7549121437", "type": "long", "nullable": true}, {"name": "Jharkhand  ", "type": "str", "nullable": true}, {"name": "227", "type": "long", "nullable": true}]
+[{"name": "KARAN BANGA", "type": "str", "nullable": true}, {"name": "RAJKUMAR BANGA", "type": "str", "nullable": true}, {"name": "karanbanga193@gmail.com", "type": "str", "nullable": true}, {"name": "8126018228", "type": "long", "nullable": true}, {"name": "Uttar Pradesh  s", "type": "str", "nullable": true}, {"name": "257", "type": "long", "nullable": true}]
+[{"name": "ARVIND KUMAR VISHWAKARMA", "type": "str", "nullable": true}, {"name": "RAM TIRATH VISHWAKARMA", "type": "str", "nullable": true}, {"name": "shoonya_shikhar@hotmail.com", "type": "str", "nullable": true}, {"name": "8874271798", "type": "long", "nullable": true}, {"name": "Uttar Pradesh  s", "type": "str", "nullable": true}, {"name": "260", "type": "long", "nullable": true}]
+
+
+
+ Also, this is not being handled by our strategy. can you tighten it further? if there are numbers in the first row, flag it and send to be reviewed by LLM

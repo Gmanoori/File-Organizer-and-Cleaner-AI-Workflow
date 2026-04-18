@@ -1,0 +1,101 @@
+from pyspark.sql import functions as F
+
+cleaned_csv_dump = (
+    csv_dump
+
+    # name.lastName
+    .withColumn("name.lastName", F.trim(F.lower(F.col("`name.lastName`"))))
+
+    # name.fullName — strip titles and parenthetical suffixes, null-safe
+    .withColumn(
+        "name.fullName",
+        F.when(
+            F.col("`name.fullName.raw`").isNull(),
+            F.lit(None).cast("string")
+        ).otherwise(
+            F.trim(
+                F.regexp_replace(
+                    F.regexp_replace(F.col("`name.fullName.raw`"), r"\(.*?\)", ""),  # drop (Architect) etc.
+                    r"^(Mr\.|Mrs\.|Ms\.|Dr\.|Prof\.)\s*", ""                         # drop title prefix
+                )
+            )
+        )
+    )
+
+    # contact.email
+    .withColumn(
+        "contact.email",
+        F.trim(F.regexp_replace(F.col("`contact.email.raw`"), r"\s+", ""))
+    )
+
+    # contact.phone — null-safe, strips country code, keeps last 10 digits
+    .withColumn(
+        "contact.phone",
+        F.when(
+            F.col("`contact.phone.raw`").isNull(),
+            F.lit(None).cast("string")
+        ).otherwise(
+            F.regexp_extract(
+                F.regexp_replace(F.col("`contact.phone.raw`"), r"[^\d]", ""),
+                r"(\d{10})$",
+                1
+            )
+        )
+    )
+
+    # contact.address.city
+    .withColumn(
+        "contact.address.city",
+        F.trim(F.lower(F.col("`contact.address.city.raw`")))
+    )
+
+    # contact.address.state
+    .withColumn(
+        "contact.address.state",
+        F.upper(F.col("`contact.address.state`"))
+    )
+
+    # contact.address.country
+    .withColumn(
+        "contact.address.country",
+        F.upper(F.col("`contact.address.country.raw`"))
+    )
+
+    # demographics.age
+    .withColumn(
+        "demographics.age",
+        F.col("`demographics.age.rawStr`").cast("long")
+    )
+
+    # activity.totalPurchases
+    .withColumn(
+        "activity.totalPurchases",
+        F.col("`activity.totalPurchases.rawStr`").cast("long")
+    )
+
+    .drop("account.createdDate.ddMMMyyyy", "account.createdDate.yyyyMMdd")
+
+    .withColumn(
+    "activity.lastPurchaseDate",
+    F.coalesce(
+        F.try_to_timestamp(F.col("`activity.lastPurchaseDate.rawStr`"), F.lit("dd-MM-yyyy HH:mm")),
+        F.try_to_timestamp(F.col("`activity.lastPurchaseDate.rawStr`"), F.lit("dd-MMM-yyyy h:mm a")),
+        F.try_to_timestamp(F.col("`activity.lastPurchaseDate.rawStr`"), F.lit("yyyy-MM-dd'T'HH:mm:ss'Z'")),
+    )
+)
+
+# Gender
+.withColumn(
+    "demographics_gender",
+    F.when(F.upper(F.col("demographics_gender")).isin("M", "MALE"),   "Male")
+     .when(F.upper(F.col("demographics_gender")).isin("F", "FEMALE"), "Female")
+     .otherwise(None)
+)
+
+
+# Revenue/ Salary
+.withColumn("activity_totalRevenue",
+    F.regexp_replace(F.col("activity_totalRevenue"), r"[\$,]", ""))
+
+.withColumn("demographics_annualIncome",
+    F.regexp_replace(F.col("demographics_annualIncome"), r"[\$,]", ""))
