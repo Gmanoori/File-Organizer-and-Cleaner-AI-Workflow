@@ -51,13 +51,13 @@ def infer_type(val) -> str:
 
 
 def clean_text_column(col):
-    return F.regexp_replace(F.lower(F.trim(F.coalesce(F.col(col).cast("string"), F.lit("")))), "[, ]", "")
+    return F.regexp_replace(F.lower(F.trim(F.coalesce(F.col(f"`{col}`").cast("string"), F.lit("")))), "[, ]", "")
 
 
 def nullish_expr(col):
     cleaned = clean_text_column(col)
     return (
-        F.col(col).isNull()
+        F.col(f"`{col}`").isNull()
         | (cleaned == "")
         | cleaned.isin(*NULLISH)
     )
@@ -126,7 +126,7 @@ def calc_type_deviation(df):
 
     for c in cols:
         typed = df.select(infer_type_expr(c).alias(c))
-        non_null = typed.filter(F.col(c) != "null")
+        non_null = typed.filter(F.col(f"`{c}`") != "null")
         count_by_type = non_null.groupBy(c).count().orderBy(F.desc("count")).collect()
         if not count_by_type:
             continue
@@ -165,7 +165,7 @@ def calc_entropy_delta(df):
 
     deltas = []
     for c in cols:
-        non_null = df.filter(~nullish_expr(c)).select(F.lower(F.trim(F.coalesce(F.col(c).cast("string"), F.lit("")))).alias("value"))
+        non_null = df.filter(~nullish_expr(c)).select(F.lower(F.trim(F.coalesce(F.col(f"`{c}`").cast("string"), F.lit("")))).alias("value"))
         if non_null.count() < 2:
             continue
         counts = non_null.groupBy("value").count().collect()
@@ -369,7 +369,7 @@ def main():
         sys.exit(1)
 
     master_path = sys.argv[1]
-    output_path = sys.argv[2] if len(sys.argv) > 2 else (Path(master_path).stem + "_with_metrics.csv")
+    output_path = sys.argv[2] if len(sys.argv) > 2 else (Path(master_path).stem + "_with_metrics.xlsx")
 
     if not os.path.exists(master_path):
         print(f"[ERROR] Master CSV not found: {master_path}")
@@ -390,7 +390,11 @@ def main():
         .config("spark.python.worker.faulthandler.enabled", "true") \
         .getOrCreate()
 
-    master_df = spark.read.option("header", "true").option("inferSchema", "false").csv(master_path)
+    master_df = spark.read.option("header", "true") \
+        .option("inferSchema", "false") \
+        .option("quote", '"') \
+        .option("escape", "\\") \
+        .csv(master_path)
     master_df = master_df.toPandas()
 
     if "file_path" not in master_df.columns or "file_type" not in master_df.columns:
@@ -411,7 +415,7 @@ def main():
 
     metrics_df = pd.DataFrame(metrics)
     master_df = pd.concat([master_df.reset_index(drop=True), metrics_df.reset_index(drop=True)], axis=1)
-    master_df.to_csv(output_path, index=False)
+    master_df.to_excel(output_path, index=False, engine="openpyxl")
 
     print(f"\nOutput → {output_path}\n")
     spark.stop()

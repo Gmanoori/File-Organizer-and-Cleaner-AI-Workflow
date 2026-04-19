@@ -323,6 +323,7 @@ def detect_excel_header(file_path):
 
 
 def read_sample_rows(file_path, file_type, max_rows=10):
+    # print("Here2")
     if file_type == "CSV":
         try:
             with open(file_path, newline="", encoding="utf-8", errors="replace") as f:
@@ -432,6 +433,7 @@ def infer_schema_for_file(spark, file_path, file_type):
 
 
 def build_schema_inventory(spark, inventory_path, output_path=None):
+    # print("Here1")
     inventory_df = spark.read.option("header", True).csv(inventory_path)
     inventory_rows = inventory_df.collect()
     result_rows = []
@@ -498,14 +500,16 @@ def build_schema_inventory(spark, inventory_path, output_path=None):
 
     output_path = output_path or inventory_path
     schema_df = pd.DataFrame(result_rows)
-    
-    # Wrap 'schema' and 'generated_headers' columns in quotes to prevent CSV breakage from internal commas
-    if 'schema' in schema_df.columns:
-        schema_df['schema'] = schema_df['schema'].apply(lambda x: f'"{x}"' if pd.notna(x) else x)
-    if 'generated_headers' in schema_df.columns:
-        schema_df['generated_headers'] = schema_df['generated_headers'].apply(lambda x: f'"{x}"' if pd.notna(x) else x)
-    
-    schema_df.to_csv(output_path, index=False, encoding="utf-8")
+
+    schema_df.to_csv(
+        output_path,
+        index=False,
+        encoding="utf-8",
+        quoting=csv.QUOTE_ALL,
+        quotechar='"',
+        doublequote=True,
+        lineterminator="\n",
+    )
 
     print(f"Wrote schema-enhanced inventory to: {output_path}")
     
