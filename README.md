@@ -32,10 +32,10 @@ This project provides a multi-stage workflow for data processing:
 ├── Output/                             # Analysis reports and logs
 ├── Sample/                             # Example data and outputs
 ├── Docs/                               # Documentation
+  ├── Cleaning Plan.txt                 # Processing strategy notes
+  └── Deviation Plan.txt                # Analysis methodology
 ├── reqs.txt                            # Python dependencies
 ├── docker-compose.yml                  # Container configuration
-├── Cleaning Plan.txt                   # Processing strategy notes
-├── Deviation Plan.txt                  # Analysis methodology
 └── README.md                           # This file
 ```
 
