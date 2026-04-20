@@ -711,7 +711,7 @@ main() {
     
     # Build CSV inventory
     log_info "Building CSV inventory..."
-    ./csv_builder.sh "$TARGET_DIR"
+    ./Scripts/Bash/csv_builder.sh "$TARGET_DIR"
     
     # Final summary
     print_box "✓ Operation Complete"

@@ -348,6 +348,14 @@ def dispatch(spark, row):
 
     if not file_path:
         return _empty_metrics("file_path is empty")
+    
+    # Resolve relative paths relative to project root
+    if not os.path.isabs(file_path):
+        # Get project root (parent of Scripts directory)
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(os.path.dirname(script_dir))  # Go up from Scripts/Python/
+        file_path = os.path.join(project_root, file_path)
+    
     if not os.path.exists(file_path):
         return _empty_metrics(f"File not found: {file_path}")
 

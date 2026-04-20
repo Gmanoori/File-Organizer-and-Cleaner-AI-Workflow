@@ -44,16 +44,54 @@ DATE_PATTERNS = [
 # UTILITY FUNCTIONS
 # ─────────────────────────────────────────────────────────────────────────────
 
+def detect_system_memory_gb(default_gb=4):
+    """Detect total system memory in gigabytes."""
+    try:
+        import psutil
+        total_bytes = psutil.virtual_memory().total
+    except ImportError:
+        try:
+            pages = os.sysconf("SC_PHYS_PAGES")
+            page_size = os.sysconf("SC_PAGE_SIZE")
+            total_bytes = pages * page_size
+        except (AttributeError, ValueError, OSError):
+            return default_gb
+    except Exception:
+        return default_gb
+
+    return max(default_gb, int(total_bytes // (1024 ** 3)))
+
+
+def choose_spark_memory(total_gb, min_gb=2, reserve_gb=2, fraction=0.6):
+    """Choose a safe Spark memory allocation based on available system RAM."""
+    if total_gb <= min_gb + reserve_gb:
+        return min_gb
+
+    target_gb = int(total_gb * fraction)
+    safe_gb = total_gb - reserve_gb
+    return max(min_gb, min(target_gb, safe_gb))
+
+
 def create_spark_session():
-    """Create a new Spark session with optimized settings."""
+    """Create a new Spark session with optimized settings based on available RAM."""
+    total_ram_gb = detect_system_memory_gb(default_gb=4)
+    spark_mem_gb = choose_spark_memory(total_ram_gb, min_gb=2, reserve_gb=2, fraction=0.6)
+    driver_mem = f"{spark_mem_gb}g"
+    executor_mem = driver_mem
+    cores = os.cpu_count() or 4
+    shuffle_partitions = max(4, min(200, cores * 2))
+    default_parallelism = max(4, cores)
+
+    print(f"[INFO] System RAM ~{total_ram_gb}GB, allocating {driver_mem} to Spark")
+
     return SparkSession.builder \
         .appName("DataCleanerSpark") \
         .master("local[*]") \
         .config("spark.driver.bindAddress", "127.0.0.1") \
-        .config("spark.driver.memory", "2g") \
-        .config("spark.executor.memory", "1g") \
-        .config("spark.sql.shuffle.partitions", "4") \
-        .config("spark.default.parallelism", "4") \
+        .config("spark.driver.memory", driver_mem) \
+        .config("spark.executor.memory", executor_mem) \
+        .config("spark.sql.shuffle.partitions", str(shuffle_partitions)) \
+        .config("spark.default.parallelism", str(default_parallelism)) \
         .config("spark.network.timeout", "300s") \
         .config("spark.executor.heartbeatInterval", "60s") \
         .config("spark.sql.adaptive.enabled", "true") \
@@ -286,32 +324,61 @@ def infer_field_type_from_schema(schema_str, column_name):
             return None
         
         # Find matching field in schema
+        col_lower = column_name.lower()
         for field in schema:
             if isinstance(field, dict):
                 field_name = field.get("name", "").lower()
-                field_type = field.get("type", "").lower()
-                
-                # Heuristic matching based on column name and type
-                col_lower = column_name.lower()
-                
-                if any(x in col_lower for x in ["phone", "tel", "mobile", "cell", "contact"]):
-                    return "phone"
-                if any(x in col_lower for x in ["price", "cost", "amount", "salary", "revenue", "income", "total", "rate"]):
-                    return "currency"
-                if any(x in col_lower for x in ["date", "dob", "created", "updated", "birth"]):
-                    return "date"
-                if any(x in col_lower for x in ["fname", "lname", "name", "author", "person"]):
-                    return "name"
-                if any(x in col_lower for x in ["address", "street", "location", "addr"]):
-                    return "address"
-                if any(x in col_lower for x in ["email", "mail"]):
-                    return "email"
-                if any(x in col_lower for x in ["url", "website", "link"]):
-                    return "url"
-                if any(x in col_lower for x in ["zip", "postal", "zipcode"]):
-                    return "zip"
-                if any(x in col_lower for x in ["percent", "pct"]):
-                    return "percentage"
+                if field_name == col_lower:
+                    # Found matching field, use schema type or infer from field name
+                    schema_type = field.get("type", "").lower()
+                    if "string" in schema_type:
+                        # Use heuristics based on field name
+                        if any(x in field_name for x in ["phone", "tel", "mobile", "cell", "contact"]):
+                            return "phone"
+                        if any(x in field_name for x in ["email", "mail"]):
+                            return "email"
+                        if any(x in field_name for x in ["address", "street", "location", "addr"]):
+                            return "address"
+                        if any(x in field_name for x in ["name", "person", "author"]):
+                            return "name"
+                        if any(x in field_name for x in ["url", "website", "link"]):
+                            return "url"
+                        if any(x in field_name for x in ["zip", "postal", "zipcode"]):
+                            return "zip"
+                        # Default to name for string fields
+                        return "name"
+                    elif "int" in schema_type or "long" in schema_type:
+                        if any(x in field_name for x in ["phone", "tel", "mobile", "cell", "contact"]):
+                            return "phone"
+                        if any(x in field_name for x in ["zip", "postal", "zipcode"]):
+                            return "zip"
+                        return "currency"  # Default for numbers
+                    elif "date" in schema_type or "timestamp" in schema_type:
+                        return "date"
+                    elif "double" in schema_type or "float" in schema_type:
+                        if any(x in field_name for x in ["percent", "pct"]):
+                            return "percentage"
+                        return "currency"
+        
+        # No matching field in schema, use heuristics on column name
+        if any(x in col_lower for x in ["phone", "tel", "mobile", "cell", "contact"]):
+            return "phone"
+        if any(x in col_lower for x in ["price", "cost", "amount", "salary", "revenue", "income", "total", "rate"]):
+            return "currency"
+        if any(x in col_lower for x in ["date", "dob", "created", "updated", "birth"]):
+            return "date"
+        if any(x in col_lower for x in ["fname", "lname", "name", "author", "person"]):
+            return "name"
+        if any(x in col_lower for x in ["address", "street", "location", "addr"]):
+            return "address"
+        if any(x in col_lower for x in ["email", "mail"]):
+            return "email"
+        if any(x in col_lower for x in ["url", "website", "link"]):
+            return "url"
+        if any(x in col_lower for x in ["zip", "postal", "zipcode"]):
+            return "zip"
+        if any(x in col_lower for x in ["percent", "pct"]):
+            return "percentage"
     except Exception as e:
         print(f"Warning: Failed to parse schema: {e}")
     
@@ -437,7 +504,15 @@ def clean_data_file_pandas(file_path, schema_json, output_path=None, has_header=
 # MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Prevent recursion
+_main_called = False
+
 def main():
+    global _main_called
+    if _main_called:
+        print("[ERROR] main() called recursively, exiting to prevent infinite loop")
+        return
+    _main_called = True
     parser = argparse.ArgumentParser(
         description="Clean data files based on schema types detected by data_integrity_scanner_spark.py"
     )
@@ -458,6 +533,15 @@ def main():
     if args.max_files:
         master_df = master_df.head(args.max_files)
 
+    # Get the project root directory (parent of Sample directory)
+    master_abs_path = os.path.abspath(args.master_csv)
+    master_dir = os.path.dirname(master_abs_path)
+    # If master CSV is in Sample/Sample Output/, project root is two levels up
+    if "Sample" in master_dir:
+        project_root = os.path.dirname(os.path.dirname(master_dir))
+    else:
+        project_root = master_dir
+
     total = len(master_df)
 
     print(f"\nCleaning {total} file(s) based on detected schemas using {'Spark' if args.use_spark else 'pandas'}…\n")
@@ -469,21 +553,7 @@ def main():
 
         spark = None
         try:
-            # Create Spark session with better configuration
-            spark = SparkSession.builder \
-                .appName("DataCleanerSpark") \
-                .master("local[*]") \
-                .config("spark.driver.bindAddress", "127.0.0.1") \
-                .config("spark.driver.memory", "2g") \
-                .config("spark.executor.memory", "1g") \
-                .config("spark.sql.shuffle.partitions", "4") \
-                .config("spark.default.parallelism", "4") \
-                .config("spark.network.timeout", "300s") \
-                .config("spark.executor.heartbeatInterval", "60s") \
-                .config("spark.sql.adaptive.enabled", "true") \
-                .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
-                .config("spark.sql.execution.pyspark.udf.simplifiedTraceback.enabled", "true") \
-                .getOrCreate()
+            spark = create_spark_session()
         except Exception as spark_err:
             print(f"[ERROR] Failed to create Spark session: {spark_err}")
             print("[INFO] Falling back to pandas processing...")
@@ -496,6 +566,10 @@ def main():
         file_path = row.get("file_path", "").strip()
         schema = row.get("schema", "")
         filename = row.get("filename", Path(file_path).name)
+
+        # Resolve relative paths relative to project root
+        if not os.path.isabs(file_path):
+            file_path = os.path.join(project_root, file_path)
 
         if not file_path or pd.isna(schema):
             continue
