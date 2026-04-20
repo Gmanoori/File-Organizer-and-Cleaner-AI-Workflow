@@ -342,27 +342,37 @@ def format_sample_rows(sample_rows):
     )
 
 
-def parse_json_array(text):
+def parse_json_response(text):
     text = text.strip()
     if not text:
-        return []
+        return [], 0.0
 
     try:
-        return json.loads(text)
+        data = json.loads(text)
+        if isinstance(data, dict) and "headers" in data and "confidence" in data:
+            headers = data["headers"]
+            confidence = data["confidence"]
+            if isinstance(headers, list) and all(isinstance(h, str) for h in headers) and isinstance(confidence, (int, float)):
+                return headers, float(confidence)
     except json.JSONDecodeError:
-        start = text.find("[")
-        end = text.rfind("]")
+        start = text.find("{")
+        end = text.rfind("}")
         if start != -1 and end != -1 and end > start:
             try:
-                return json.loads(text[start : end + 1])
+                data = json.loads(text[start : end + 1])
+                if isinstance(data, dict) and "headers" in data and "confidence" in data:
+                    headers = data["headers"]
+                    confidence = data["confidence"]
+                    if isinstance(headers, list) and all(isinstance(h, str) for h in headers) and isinstance(confidence, (int, float)):
+                        return headers, float(confidence)
             except json.JSONDecodeError:
                 pass
-    return []
+    return [], 0.0
 
 
-def generate_header_suggestions(sample_rows, model=None):
+def generate_header_suggestions(sample_rows, model=None, filename=None, confidence=1.0):
     if not sample_rows:
-        return []
+        return [], 0.0
 
     column_count = len(sample_rows[0])
     sample_text = format_sample_rows(sample_rows)
@@ -370,29 +380,41 @@ def generate_header_suggestions(sample_rows, model=None):
         "role": "system",
         "content": (
             "You are a helpful assistant that suggests column headers for tabular data. "
-            "Return only a JSON array of header names."
+            "Return a JSON object with 'headers' as an array of strings and 'confidence' as a number from 0.1 to 1.0."
         ),
     }
+    
+    # Build user message with filename context if available
+    user_content = (
+        f"I have an unlabeled table with {column_count} columns and up to {len(sample_rows)} rows."
+    )
+    if filename:
+        user_content += f" The data comes from a file named '{filename}'. Use this context to infer likely column meanings (e.g., 'contacts.csv' suggests names/emails)."
+    user_content += (
+        " Suggest concise header names for each column based on the sample values. "
+        "If a column value looks like a name, email, phone, or location, use that meaning. "
+    )
+    if confidence <= 0.85:
+        user_content += " Note: Detection confidence is low, so be cautious with interpretations and prefer generic headers if ambiguous. "
+    user_content += (
+        "Return exactly one JSON object with 'headers' as an array of strings (one per column) and 'confidence' as a number from 0.1 to 1.0 indicating your certainty. "
+        "Here are the sample rows:\n" + sample_text
+    )
+    
     user_message = {
         "role": "user",
-        "content": (
-            f"I have an unlabeled table with {column_count} columns and up to {len(sample_rows)} rows. "
-            "Suggest concise header names for each column based on the sample values. "
-            "If a column value looks like a name, email, phone, or location, use that meaning. "
-            "Return exactly one JSON array of strings, one header name per column. "
-            "Here are the sample rows:\n" + sample_text
-        ),
+        "content": user_content,
     }
 
     try:
         completion_text = call_chat([system_message, user_message], model=model)
-        headers = parse_json_array(completion_text)
-        if isinstance(headers, list) and all(isinstance(item, str) for item in headers):
-            return headers[:column_count]
+        headers, llm_confidence = parse_json_response(completion_text)
+        if headers:
+            return headers[:column_count], llm_confidence
     except Exception as exc:
         print(f"Warning: failed to generate suggested headers: {exc}")
 
-    return [f"col_{i}" for i in range(column_count)]
+    return [f"col_{i}" for i in range(column_count)], 0.5
 
 
 def infer_schema_for_file(spark, file_path, file_type):
@@ -470,12 +492,14 @@ def build_schema_inventory(spark, inventory_path, output_path=None):
         elif not has_header:
             # No header detected - generate header suggestions
             sample_rows = read_sample_rows(file_path, file_type, max_rows=5)
-            generated_headers = generate_header_suggestions(sample_rows)
+            generated_headers, llm_confidence = generate_header_suggestions(sample_rows, filename=filename, confidence=confidence)
+            confidence = llm_confidence  # Use LLM's confidence
         elif needs_llm_review:
             # Header detected but ambiguous - ask LLM to verify the first row interpretation
-            sample_rows = read_sample_rows(file_path, file_type, max_rows=5)
+            sample_rows = read_sample_rows(file_path, file_type, max_rows=10)
             print(f" Flagged for LLM review (confidence={confidence:.2f}): {detection_reason}")
-            generated_headers = generate_header_suggestions(sample_rows, model=None)
+            generated_headers, llm_confidence = generate_header_suggestions(sample_rows, model=None, filename=filename, confidence=confidence)
+            confidence = llm_confidence  # Use LLM's confidence
         else:
             # Clear header - infer schema normally
             try:
