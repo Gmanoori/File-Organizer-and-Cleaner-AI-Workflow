@@ -483,20 +483,16 @@ def build_schema_inventory(spark, inventory_path, output_path=None):
             except Exception as exc:
                 schema_array = [{"error": str(exc)}]
 
-        result_rows.append(
-            {
-                "serial_number": serial_number,
-                "filename": filename,
-                "file_type": file_type,
-                "file_path": file_path,
-                "has_header": has_header,
-                "header_confidence": confidence,
-                "needs_llm_review": needs_llm_review,
-                "detection_reason": detection_reason,
-                "schema": json.dumps(schema_array, ensure_ascii=False) if has_header and not needs_llm_review else json.dumps([], ensure_ascii=False),
-                "generated_headers": json.dumps(generated_headers, ensure_ascii=False),
-            }
-        )
+        row_dict = row.asDict()
+        row_dict.update({
+            "has_header": has_header,
+            "header_confidence": confidence,
+            "needs_llm_review": needs_llm_review,
+            "detection_reason": detection_reason,
+            "schema": json.dumps(schema_array, ensure_ascii=False) if has_header and not needs_llm_review else json.dumps([], ensure_ascii=False),
+            "generated_headers": json.dumps(generated_headers, ensure_ascii=False),
+        })
+        result_rows.append(row_dict)
 
     output_path = output_path or inventory_path
     schema_df = pd.DataFrame(result_rows)

@@ -165,7 +165,7 @@ def calc_entropy_delta(df):
 
     deltas = []
     for c in cols:
-        non_null = df.filter(~nullish_expr(c)).select(F.lower(F.trim(F.coalesce(F.col(f"`{c}`").cast("string"), F.lit("")))).alias("value"))
+        non_null = df.filter(~nullish_expr(c)).select(F.lower(F.trim(F.coalesce(F.col(c).cast("string"), F.lit("")))).alias("value"))
         if non_null.count() < 2:
             continue
         counts = non_null.groupBy("value").count().collect()
@@ -363,13 +363,29 @@ def dispatch(spark, row):
     return process_csv(spark, file_path, has_header)
 
 
+def write_to_csv(df, output_path):
+    df.to_csv(
+        output_path,
+        index=False,
+        encoding="utf-8",
+        quoting=csv.QUOTE_ALL,
+        quotechar='"',
+        doublequote=True,
+        lineterminator="\n",
+    )
+
+
+def write_to_xlsx(df, output_path):
+    df.to_excel(output_path, index=False, engine="openpyxl")
+
+
 def main():
     if len(sys.argv) < 2:
         print(__doc__)
         sys.exit(1)
 
     master_path = sys.argv[1]
-    output_path = sys.argv[2] if len(sys.argv) > 2 else (Path(master_path).stem + "_with_metrics.xlsx")
+    output_path = sys.argv[2] if len(sys.argv) > 2 else (Path(master_path).stem + "_with_metrics.csv")
 
     if not os.path.exists(master_path):
         print(f"[ERROR] Master CSV not found: {master_path}")
@@ -390,11 +406,7 @@ def main():
         .config("spark.python.worker.faulthandler.enabled", "true") \
         .getOrCreate()
 
-    master_df = spark.read.option("header", "true") \
-        .option("inferSchema", "false") \
-        .option("quote", '"') \
-        .option("escape", "\\") \
-        .csv(master_path)
+    master_df = spark.read.option("header", "true").option("inferSchema", "false").csv(master_path)
     master_df = master_df.toPandas()
 
     if "file_path" not in master_df.columns or "file_type" not in master_df.columns:
@@ -415,7 +427,14 @@ def main():
 
     metrics_df = pd.DataFrame(metrics)
     master_df = pd.concat([master_df.reset_index(drop=True), metrics_df.reset_index(drop=True)], axis=1)
-    master_df.to_excel(output_path, index=False, engine="openpyxl")
+
+    if output_path.endswith('.xlsx'):
+        write_to_xlsx(master_df, output_path)
+    elif output_path.endswith('.csv'):
+        write_to_csv(master_df, output_path)
+    else:
+        # Default to CSV if extension not recognized
+        write_to_csv(master_df, output_path)
 
     print(f"\nOutput → {output_path}\n")
     spark.stop()

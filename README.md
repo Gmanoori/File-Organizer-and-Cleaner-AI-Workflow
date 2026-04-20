@@ -7,8 +7,8 @@ A complete pipeline for organizing files, cataloging them, inferring schemas, an
 This project implements a three-stage workflow:
 
 1. **File Organization & Cataloging** (bash)
-2. **Schema Detection & Classification** (Python)
-3. **Data Integrity Analysis** (Python)
+2. **Data Integrity Analysis** (Python)
+3. **Schema Detection & Classification** (Python)
 
 All stages work together seamlessly with minimal manual intervention.
 
@@ -63,21 +63,22 @@ chmod +x csv_builder.sh
 
 ---
 
-## Stage 2: Schema Detection and Classification
+## Stage 2: Data Integrity Analysis
 
 ### Script: `add_schema_to_csv.py`
 
-**Purpose:** Analyze the CSV inventory from Stage 1, detect headers in each file, infer column schemas, and handle ambiguous cases via LLM.
+**Purpose:** Analyze files from the raw inventory and compute data quality metrics.
 
 **What it does:**
-- Reads the CSV inventory from `file_organizer.sh`
-- For each file:
-  - Detects if it has a header row
-  - Flags ambiguous cases (e.g., first row contains data that looks like headers)
-  - Infers schema for files with headers
-  - Generates header suggestions for files without headers
-- Sends ambiguous cases to LLM (Gemini or Gemma) for manual review
-- Appends results to inventory
+- Reads the CSV inventory from Stage 1
+- For each data file, computes:
+  - **null_pct** - Percentage of null/empty/NaN cells
+  - **field_deviation_pct** - % of rows with field count != modal count (Strategy 1)
+  - **type_deviation_pct** - % of cells whose inferred type deviates from column mode (Strategy 2)
+  - **entropy_delta_pct** - Shannon entropy deviation from baseline
+  - **total_rows** - Data row count (excludes header)
+  - **total_cells** - Total cell count
+  - **error** - Any parse/IO error message (blank if clean)
 
 **Header Detection Strategy:**
 - Looks for common patterns: email addresses, phone numbers, numeric IDs
@@ -86,14 +87,24 @@ chmod +x csv_builder.sh
 - Flags inconsistencies in type distributions across columns
 - Provides confidence scores and detection reasoning
 
-**Usage:**
+**Usage - Core Python:**
 
 ```bash
-# Required: Input CSV from file_organizer.sh
-python add_schema_to_csv.py /path/to/file_inventory.csv
+# Analyze with core Python (sufficient for local systems)
+python data_integrity_scanner.py /path/to/file_inventory.csv
 
-# Optional: Specify custom output path
-python add_schema_to_csv.py /path/to/file_inventory.csv --output /path/to/output.csv
+# Custom output path
+python data_integrity_scanner.py /path/to/file_inventory.csv /path/to/output.csv
+```
+
+**Usage - Apache Spark:**
+
+```bash
+# Analyze with Spark (for large datasets or cloud deployments)
+python data_integrity_scanner_spark.py /path/to/file_inventory.csv
+
+# Custom output path
+python data_integrity_scanner_spark.py /path/to/file_inventory.csv /path/to/output.csv
 ```
 
 **Environment Variables:**
@@ -111,16 +122,14 @@ python add_schema_to_csv.py file_inventory.csv
 ```
 
 **Output Columns:**
-- `serial_number` - From inventory
-- `filename` - From inventory
-- `file_type` - From inventory
-- `file_path` - From inventory
-- `has_header` - Boolean: true if header row detected
-- `header_confidence` - 0.0 to 1.0 confidence score
-- `needs_llm_review` - Boolean: true if ambiguous
-- `detection_reason` - Human-readable reasoning
-- `schema` - JSON array of column definitions with type and nullable info
-- `generated_headers` - JSON array of LLM-suggested headers (for headerless files)
+All input columns plus:
+- `null_pct` - 0-100, percentage of empty/null cells
+- `field_deviation_pct` - 0-100, comma injection or row structural issues
+- `type_deviation_pct` - 0-100, type consistency issues
+- `entropy_delta_pct` - 0-100, entropy deviation from uniform baseline
+- `total_rows` - Integer, count of data rows
+- `total_cells` - Integer, total cells = rows × columns
+- `error` - String, error message if file couldn't be read
 
 **Example Output Schema:**
 ```json
@@ -132,17 +141,18 @@ python add_schema_to_csv.py file_inventory.csv
 ```
 
 **Limitations & Considerations:**
-- Requires the CSV output from Stage 1 (has `file_path` column)
+- Requires the CSV output from Stage 2 (has `file_path` column)
 - LLM calls are made for ambiguous cases (requires API keys for Gemini/Gemma)
+- Preserves all existing columns from input CSV
 - Depends on: `call_gemini_chat.py` or `call_gemma_chat.py`
 
 ---
 
-## Stage 3: Data Integrity Analysis
+## Stage 3: Schema Detection and Classification
 
 ### Scripts: `data_integrity_scanner.py` or `data_integrity_scanner_spark.py`
 
-**Purpose:** Analyze files from the schema-enriched inventory and compute data quality metrics.
+**Purpose:** Analyze the CSV inventory from Stage 2, detect headers in each file, infer column schemas, and handle ambiguous cases via LLM. Preserves existing columns (like integrity metrics).
 
 Two implementations available:
 
@@ -152,47 +162,35 @@ Two implementations available:
 Both produce identical metrics. On a local system, performance is the same. On cloud/cluster environments, Spark version scales horizontally.
 
 **What it does:**
-- Reads schema-enriched CSV from Stage 2
-- For each data file, computes:
-  - **null_pct** - Percentage of null/empty/NaN cells
-  - **field_deviation_pct** - % of rows with field count != modal count (Strategy 1)
-  - **type_deviation_pct** - % of cells whose inferred type deviates from column mode (Strategy 2)
-  - **entropy_delta_pct** - Shannon entropy deviation from baseline
-  - **total_rows** - Data row count (excludes header)
-  - **total_cells** - Total cell count
-  - **error** - Any parse/IO error message (blank if clean)
+- Reads the CSV inventory from Stage 2 (with metrics)
+- For each file:
+  - Detects if it has a header row
+  - Flags ambiguous cases (e.g., first row contains data that looks like headers)
+  - Infers schema for files with headers
+  - Generates header suggestions for files without headers
+- Sends ambiguous cases to LLM (Gemini or Gemma) for manual review
+- Appends schema results while preserving all existing columns
 
 **Supported File Types:** CSV, TSV, XLSX, XLS, JSON
 
-**Usage - Core Python:**
+**Usage:**
 
 ```bash
-# Analyze with core Python (sufficient for local systems)
-python data_integrity_scanner.py /path/to/schema_enriched_inventory.csv
+# Required: Input CSV from data_integrity_scanner
+python add_schema_to_csv.py /path/to/file_inventory_deviation.csv
 
-# Custom output path
-python data_integrity_scanner.py /path/to/schema_enriched_inventory.csv /path/to/output.csv
-```
-
-**Usage - Apache Spark:**
-
-```bash
-# Analyze with Spark (for large datasets or cloud deployments)
-python data_integrity_scanner_spark.py /path/to/schema_enriched_inventory.csv
-
-# Custom output path
-python data_integrity_scanner_spark.py /path/to/schema_enriched_inventory.csv /path/to/output.csv
+# Optional: Specify custom output path
+python add_schema_to_csv.py /path/to/file_inventory_deviation.csv --output /path/to/output.csv
 ```
 
 **Output Columns:**
 All input columns (from Stage 2) plus:
-- `null_pct` - 0-100, percentage of empty/null cells
-- `field_deviation_pct` - 0-100, comma injection or row structural issues
-- `type_deviation_pct` - 0-100, type consistency issues
-- `entropy_delta_pct` - 0-100, entropy deviation from uniform baseline
-- `total_rows` - Integer, count of data rows
-- `total_cells` - Integer, total cells = rows × columns
-- `error` - String, error message if file couldn't be read
+- `has_header` - Boolean: true if header row detected
+- `header_confidence` - 0.0 to 1.0 confidence score
+- `needs_llm_review` - Boolean: true if ambiguous
+- `detection_reason` - Human-readable reasoning
+- `schema` - JSON array of column definitions with type and nullable info
+- `generated_headers` - JSON array of LLM-suggested headers (for headerless files)
 
 **Example Interpretation:**
 ```
@@ -226,17 +224,24 @@ chmod +x file_organizer.sh csv_builder.sh
 - Organized folders: `CSV/`, `XLSX/`, `XLS/`, `JSON/`
 - `file_inventory.csv` - Raw catalog
 
-### Step 2: Detect Schemas
+### Step 2: Scan Data Integrity
 
 ```bash
-# Choose LLM for ambiguous cases
-export API_CHOICE=gemini
-
-# Enrich inventory with schema and header info
-python add_schema_to_csv.py file_inventory.csv --output file_inventory_schema.csv
+# First, compute data quality metrics
+python data_integrity_scanner_spark.py file_inventory.csv --output file_inventory_deviation.csv
 ```
 
-**Output:** `file_inventory_schema.csv` - Inventory with schema, confidence scores, and LLM flags
+**Output:** `file_inventory_deviation.csv` - Inventory with integrity metrics
+
+### Step 3: Detect Schemas
+
+```bash
+# Then, enrich with schema and header info (preserves existing metrics)
+export API_CHOICE=gemini
+python add_schema_to_csv.py file_inventory_deviation.csv --output file_inventory_schema.csv
+```
+
+**Output:** `file_inventory_schema.csv` - Full inventory with metrics + schema, confidence scores, and LLM flags
 
 Check for LLM reviews:
 
@@ -245,25 +250,13 @@ Check for LLM reviews:
 grep "true" file_inventory_schema.csv | grep "needs_llm_review"
 ```
 
-### Step 3: Scan Data Integrity
-
-```bash
-# For local/moderate datasets
-python data_integrity_scanner.py file_inventory_schema.csv --output file_inventory_integrity.csv
-
-# For large datasets or cloud deployment
-python data_integrity_scanner_spark.py file_inventory_schema.csv --output file_inventory_integrity.csv
-```
-
-**Output:** `file_inventory_integrity.csv` - Full inventory with quality metrics
-
 ### Analyze Results
 
 ```bash
 # View high-risk files (null% > 10% or deviation% > 5%)
 python -c "
 import pandas as pd
-df = pd.read_csv('file_inventory_integrity.csv')
+df = pd.read_csv('file_inventory_schema.csv')
 risk = df[(df['null_pct'] > 10) | (df['field_deviation_pct'] > 5)]
 print(risk[['filename', 'null_pct', 'field_deviation_pct', 'error']])
 "
