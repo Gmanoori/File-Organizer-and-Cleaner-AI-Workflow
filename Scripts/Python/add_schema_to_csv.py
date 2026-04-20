@@ -12,9 +12,9 @@ from pyspark.sql import SparkSession
 # Choose API
 api_choice = os.environ.get("API_CHOICE", "gemma").lower()
 if api_choice == "gemini":
-    from call_gemini_chat import call_gemini_chat as call_chat
+    from Scripts.Python.call_gemini_chat import call_gemini_chat as call_chat
 elif api_choice == "gemma":
-    from call_gemma_chat import call_gemma_chat as call_chat
+    from Scripts.Python.call_gemma_chat import call_gemma_chat as call_chat
 else:
     raise ValueError("API_CHOICE must be 'gemini' or 'gemma'")
 

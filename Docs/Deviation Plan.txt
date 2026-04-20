@@ -1,0 +1,15 @@
+In real time data(CSV, XLS, XLSX, JSON), we need to find if there are comma injections or null values anywhere and then find out the deviation % based on amount of mangling. Suggest strategies to calculate the metrics 
+
+1) Parse every row and count delimiter tokens. Flag rows where field count deviates from the modal (most-common) count — comma injection silently adds columns. deviation% = (|rows_with_wrong_field_count| / total_rows) × 100
+
+2) For each column, establish a value-type distribution baseline (int%, float%, string%, null%). Flag columns whose live type ratio drifts beyond 2σ from baseline. z = (live_null% − μ_null) / σ_null → deviation% = (z / z_max) × 100
+
+3) Deploy a per-column pattern registry (phone, email, ID, currency). Any value violating its expected pattern is a mangled cell. Score the violation rate. deviation% = (pattern_violations / non_null_values) × 100
+
+4) Validate inter-column logical consistency. Injected commas shift values left — an amount lands in a currency column, a name lands in an ID column. Score incoherence. deviation% = (cross_field_violations / expected_valid_pairs) × 100
+
+Extra: Δentropy% = |H(t) − H(t-1)| / H_max × 100
+
+
+Run this now:
+python .\data_integrity_scanner_spark.py "E:\Ganesh-Projects\File-Organizer-and-Cleaner-AI-Workflow\Sample\Sample Output\file_inventory.csv" "E:\Ganesh-Projects\File-Organizer-and-Cleaner-AI-Workflow\Sample\Sample Output\file_inventory_deviation_final.csv"
