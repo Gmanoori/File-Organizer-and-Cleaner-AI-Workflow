@@ -28,7 +28,6 @@ This project provides a multi-stage workflow for data processing:
 │       └── data_integrity_scanner_spark.py # Integrity analysis (Spark)
 ├── Data/                               # Source data directories
 ├── Cleaned/                            # Cleaned data output
-├── cleaned_data/                       # Alternative cleaned data output
 ├── Output/                             # Analysis reports and logs
 ├── Sample/                             # Example data and outputs
 ├── Docs/                               # Documentation
@@ -75,7 +74,7 @@ Detects headers, infers schemas, and uses LLM for ambiguous cases.
 
 **Usage:**
 ```bash
-export API_CHOICE=gemini
+export API_CHOICE=gemini (or) gemma
 python Scripts/Python/add_schema_to_csv.py file_inventory_deviation.csv
 ```
 
