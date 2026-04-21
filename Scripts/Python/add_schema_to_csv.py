@@ -417,6 +417,18 @@ def generate_header_suggestions(sample_rows, model=None, filename=None, confiden
     return [f"col_{i}" for i in range(column_count)], 0.5
 
 
+def generate_header_suggestions_with_retry(file_path, file_type, initial_rows, filename, confidence, model=None, low_confidence_threshold=0.75, retry_extra_rows=10):
+    """Call LLM for header suggestions; if confidence is low, retry with more rows."""
+    headers, llm_confidence = generate_header_suggestions(initial_rows, model=model, filename=filename, confidence=confidence)
+
+    if llm_confidence < low_confidence_threshold:
+        total_rows = len(initial_rows) + retry_extra_rows
+        extended_rows = read_sample_rows(file_path, file_type, max_rows=total_rows)
+        print(f"  Low LLM confidence ({llm_confidence:.2f}), retrying with {total_rows} rows...")
+        headers, llm_confidence = generate_header_suggestions(extended_rows, model=model, filename=filename, confidence=confidence)
+
+    return headers, llm_confidence
+
 def infer_schema_for_file(spark, file_path, file_type):
     file_type = file_type.upper()
 
@@ -461,7 +473,7 @@ def build_schema_inventory(spark, inventory_path, output_path=None):
     result_rows = []
 
     for row in inventory_rows:
-        print(row["serial_number"])
+        print(f"Adding Schema for Serial Number: {row['serial_number']}")
         file_path = row["file_path"]
         file_type = row["file_type"]
         serial_number = row["serial_number"]
@@ -492,13 +504,13 @@ def build_schema_inventory(spark, inventory_path, output_path=None):
         elif not has_header:
             # No header detected - generate header suggestions
             sample_rows = read_sample_rows(file_path, file_type, max_rows=5)
-            generated_headers, llm_confidence = generate_header_suggestions(sample_rows, filename=filename, confidence=confidence)
+            generated_headers, llm_confidence = generate_header_suggestions_with_retry(file_path, file_type, sample_rows, filename=filename, confidence=confidence)
             confidence = llm_confidence  # Use LLM's confidence
         elif needs_llm_review:
             # Header detected but ambiguous - ask LLM to verify the first row interpretation
             sample_rows = read_sample_rows(file_path, file_type, max_rows=10)
             print(f" Flagged for LLM review (confidence={confidence:.2f}): {detection_reason}")
-            generated_headers, llm_confidence = generate_header_suggestions(sample_rows, model=None, filename=filename, confidence=confidence)
+            generated_headers, llm_confidence = generate_header_suggestions_with_retry(file_path, file_type, sample_rows, filename=filename, confidence=confidence, model=None)
             confidence = llm_confidence  # Use LLM's confidence
         else:
             # Clear header - infer schema normally

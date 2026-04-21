@@ -28,10 +28,11 @@ from pyspark.sql import SparkSession, functions as F, types as T
 # REGEX PATTERNS
 # ─────────────────────────────────────────────────────────────────────────────
 
-PHONE_PATTERN = r"(?:\+?1[-.\s]?)?\(?([0-9]{3})\)?[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})"
-EMAIL_PATTERN = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.(com|org|net|edu|in|co\.uk|gov|de|fr|au)$"
-CURRENCY_PATTERN = r"[\$€¥£]|,(?=\d{3})"
-URL_PATTERN = r"^https?://[^\s]+$"
+# PHONE_PATTERN = r"(?:\+?1[-.\s]?)?\(?([0-9]{3})\)?[-.\s]?([0-9]{3})[-.\s]?([0-9]{4})"  Very Broad US phone pattern
+PHONE_PATTERN = r"^(\+91|91|0)?\s?[6-9]\d{9}$"
+EMAIL_PATTERN = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.([a-z]{2,8}(?:\.[a-z]{2})?)$"
+CURRENCY_PATTERN = r"[\$€¥£₹]|,(?=\d{3})"
+URL_PATTERN = r"^(?:https?://)?www\.[^\s]+$"
 ZIP_US_PATTERN = r"^\d{5}(-\d{4})?$"
 DATE_PATTERNS = [
     (r"^(\d{4})[/-](\d{2})[/-](\d{2})$", "YYYY-MM-DD"),  # 2024-01-15
@@ -169,7 +170,7 @@ def clean_currency(value):
         # Handle negative values
         is_negative = "-" in value or value.startswith("(")
         # Remove currency symbols, commas, parentheses
-        cleaned = re.sub(r"[\$€¥£,\s()]", "", value)
+        cleaned = re.sub(r"[\$€¥£₹,\s()]", "", value)
         if not cleaned:
             return None
         result = float(cleaned)
@@ -333,9 +334,9 @@ def infer_field_type_from_schema(schema_str, column_name):
                     schema_type = field.get("type", "").lower()
                     if "string" in schema_type:
                         # Use heuristics based on field name
-                        if any(x in field_name for x in ["phone", "tel", "mobile", "cell", "contact"]):
+                        if any(x in field_name for x in ["phone", "tel", "mobile", "cell", "contact", "homephone", "officephone"]):
                             return "phone"
-                        if any(x in field_name for x in ["email", "mail"]):
+                        if any(x in field_name for x in ["email", "mail", "emailaddress"]):
                             return "email"
                         if any(x in field_name for x in ["address", "street", "location", "addr"]):
                             return "address"
@@ -352,26 +353,30 @@ def infer_field_type_from_schema(schema_str, column_name):
                             return "phone"
                         if any(x in field_name for x in ["zip", "postal", "zipcode"]):
                             return "zip"
-                        return "currency"  # Default for numbers
+                        if any(x in field_name for x in ["rate", "price", "cost", "amount", "salary", "revenue", "income"]):
+                            return "currency"
+                        return "number"  # Default for numbers
                     elif "date" in schema_type or "timestamp" in schema_type:
                         return "date"
                     elif "double" in schema_type or "float" in schema_type:
                         if any(x in field_name for x in ["percent", "pct"]):
                             return "percentage"
-                        return "currency"
+                        if any(x in field_name for x in ["rate", "price", "cost", "amount", "salary", "revenue", "income"]):
+                            return "currency"
+                        return "number"
         
         # No matching field in schema, use heuristics on column name
-        if any(x in col_lower for x in ["phone", "tel", "mobile", "cell", "contact"]):
+        if any(x in col_lower for x in ["phone", "tel", "mobile", "cell", "contact", "homephone", "office"]):
             return "phone"
         if any(x in col_lower for x in ["price", "cost", "amount", "salary", "revenue", "income", "total", "rate"]):
             return "currency"
-        if any(x in col_lower for x in ["date", "dob", "created", "updated", "birth"]):
+        if any(x in col_lower for x in ["date", "dob", "created", "updated", "birth", "from", "to"]):
             return "date"
         if any(x in col_lower for x in ["fname", "lname", "name", "author", "person"]):
             return "name"
         if any(x in col_lower for x in ["address", "street", "location", "addr"]):
             return "address"
-        if any(x in col_lower for x in ["email", "mail"]):
+        if any(x in col_lower for x in ["email", "mail", "email address"]):
             return "email"
         if any(x in col_lower for x in ["url", "website", "link"]):
             return "url"
@@ -505,14 +510,14 @@ def clean_data_file_pandas(file_path, schema_json, output_path=None, has_header=
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Prevent recursion
-_main_called = False
+# _main_called = False
 
 def main():
-    global _main_called
-    if _main_called:
-        print("[ERROR] main() called recursively, exiting to prevent infinite loop")
-        return
-    _main_called = True
+    # global _main_called
+    # if _main_called:
+    #     print("[ERROR] main() called recursively, exiting to prevent infinite loop")
+    #     return
+    # _main_called = True
     parser = argparse.ArgumentParser(
         description="Clean data files based on schema types detected by data_integrity_scanner_spark.py"
     )
