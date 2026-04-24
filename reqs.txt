@@ -2,6 +2,7 @@ annotated-types==0.7.0
 certifi==2026.2.25
 cffi==2.0.0
 charset-normalizer==3.4.7
+clevercsv
 colorama==0.4.6
 cryptography==46.0.7
 et-xmlfile==2.0.0
@@ -35,6 +36,7 @@ pyspark==4.1.1
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.2
 requests==2.33.1
+scipy
 six==1.17.0
 smmap==5.0.3
 tqdm==4.67.3
