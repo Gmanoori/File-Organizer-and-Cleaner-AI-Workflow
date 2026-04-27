@@ -46,3 +46,4 @@ tzdata==2026.1
 uritemplate==4.2.0
 urllib3==2.6.3
 xlrd==2.0.2
+xlwt

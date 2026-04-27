@@ -413,7 +413,7 @@ def clean_column(df, column_name, field_type):
     return df
 
 
-def clean_data_file_pandas(file_path, schema_json, output_path=None, has_header=True, generated_headers=None):
+def clean_data_file_pandas(file_path, schema_json, output_path=None):
     """
     Clean a single data file based on detected schema using pandas.
     This is more stable than Spark UDFs for complex cleaning operations.
@@ -437,21 +437,9 @@ def clean_data_file_pandas(file_path, schema_json, output_path=None, has_header=
 
         # Read file with pandas
         if file_ext == ".csv":
-            if not has_header and headers:
-                df = pd.read_csv(file_path, header=None, dtype=str)
-                if len(headers) == df.shape[1]:
-                    df.columns = headers
-                else:
-                    extra_columns = [f"column_{i}" for i in range(df.shape[1] - len(headers))]
-                    df.columns = headers[: df.shape[1]] + extra_columns
-            elif not has_header:
-                df = pd.read_csv(file_path, header=None, dtype=str)
-            else:
-                df = pd.read_csv(file_path, dtype=str)
+            df = pd.read_csv(file_path, dtype=str)
         elif file_ext in {".xlsx", ".xls"}:
-            df = pd.read_excel(file_path, header=None if not has_header else 0, dtype=str)
-            if not has_header and headers and len(headers) == df.shape[1]:
-                df.columns = headers
+            df = pd.read_excel(file_path, dtype=str)
         elif file_ext == ".json":
             df = pd.read_json(file_path)
         else:
@@ -582,21 +570,13 @@ def main():
         print(f"[{idx + 1:>4}/{total}] {filename}")
 
         output_path = os.path.join(args.output_dir, f"{Path(file_path).stem}_cleaned.csv")
-        has_header_raw = row.get("has_header", True)
-        has_header = str(has_header_raw).strip().lower() == "true" if isinstance(has_header_raw, str) else bool(has_header_raw)
-        generated_headers = row.get("generated_headers", None)
 
         try:
             if args.use_spark and 'spark' in locals():
                 result = clean_data_file(spark, file_path, schema, output_path)
             else:
-                result = clean_data_file_pandas(
-                    file_path,
-                    schema,
-                    output_path,
-                    has_header=has_header,
-                    generated_headers=generated_headers,
-                )
+                result = clean_data_file_pandas(file_path, schema, output_path)
+
             
             if result:
                 cleaned_files.append(result)

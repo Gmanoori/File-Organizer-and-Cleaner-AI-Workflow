@@ -80,7 +80,7 @@ TYPE_SHIFT_THRESHOLD       = 0.40   # flag if >40% of cells have wrong type vs c
 FIELD_COUNT_ZSCORE         = 3.0    # flag if field-count z-score exceeds this
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%H:%M:%S",
 )

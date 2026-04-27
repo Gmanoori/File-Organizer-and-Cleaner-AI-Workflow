@@ -335,11 +335,69 @@ def read_sample_rows(file_path, file_type, max_rows=10):
         df = pd.read_excel(file_path, header=None, nrows=max_rows)
     return df.fillna("").astype(str).values.tolist()
 
+FILE_SIZE_THRESHOLD_MB = 0.5  # use Spark if file is larger than this
 
-def format_sample_rows(sample_rows):
-    return "\n".join(
-        [" | ".join(str(value) for value in row) for row in sample_rows]
-    )
+def read_sample_rows_spark(spark, file_path, file_type, max_rows=10):
+    """
+    Spark-based sample reader for large files.
+    Reads only max_rows using Spark's limit() — avoids loading full file into memory.
+    Falls back to pandas read_sample_rows if Spark fails.
+    """
+    try:
+        file_type = file_type.upper()
+        if file_type == "CSV":
+            sdf = (
+                spark.read
+                .option("header", "true")
+                .option("inferSchema", "false")
+                .csv(file_path)
+            )
+        elif file_type == "JSON":
+            sdf = (
+                spark.read
+                .option("inferSchema", "false")
+                .json(file_path)
+            )
+        elif file_type in {"XLSX", "XLS"}:
+            # Spark has no native Excel reader — fall back to pandas for Excel regardless of size
+            return read_sample_rows(file_path, file_type, max_rows=max_rows)
+        else:
+            return read_sample_rows(file_path, file_type, max_rows=max_rows)
+
+        sample_df = sdf.limit(max_rows).toPandas().fillna("").astype(str)
+        # Re-insert header as row 0 so callers get the same shape as read_sample_rows
+        header_row = list(sample_df.columns)
+        data_rows  = sample_df.values.tolist()
+        return [header_row] + data_rows
+
+    except Exception as e:
+        print(f"  Spark sample read failed for {file_path}: {e} — falling back to pandas")
+        return read_sample_rows(file_path, file_type, max_rows=max_rows)
+
+
+def read_sample_rows_auto(file_path, file_type, max_rows=10, spark=None):
+    """
+    Router: uses Spark for files above FILE_SIZE_THRESHOLD_MB, pandas otherwise.
+    Drop-in replacement for read_sample_rows anywhere spark is available.
+    """
+    if spark is not None:
+        try:
+            size_mb = os.path.getsize(file_path) / (1024 * 1024)
+            if size_mb > FILE_SIZE_THRESHOLD_MB:
+                print(f"  Large file ({size_mb:.1f} MB) — using Spark reader")
+                return read_sample_rows_spark(spark, file_path, file_type, max_rows=max_rows)
+        except OSError:
+            pass  # can't stat file, fall through to pandas
+    return read_sample_rows(file_path, file_type, max_rows=max_rows)
+
+
+def format_sample_rows(sample_rows, max_cell_len=50):
+    """Truncate long cell values to keep prompts short and avoid timeouts."""
+    rows = []
+    for row in sample_rows:
+        cells = [str(v)[:max_cell_len] for v in row]
+        rows.append(" | ".join(cells))
+    return "\n".join(rows)
 
 
 def parse_json_response(text):
@@ -386,7 +444,7 @@ def generate_header_suggestions(sample_rows, model=None, filename=None, confiden
     
     # Build user message with filename context if available
     user_content = (
-        f"I have an unlabeled table with {column_count} columns and up to {len(sample_rows)} rows."
+        f"I have an unlabeled table with {column_count} columns and up to {len(sample_rows)} rows. \nIMPORTANT: Return EXACTLY {column_count} headers in the array — one per column, no more, no less."
     )
     if filename:
         user_content += f" The data comes from a file named '{filename}'. Use this context to infer likely column meanings (e.g., 'contacts.csv' suggests names/emails)."
@@ -409,15 +467,31 @@ def generate_header_suggestions(sample_rows, model=None, filename=None, confiden
     try:
         completion_text = call_chat([system_message, user_message], model=model)
         headers, llm_confidence = parse_json_response(completion_text)
-        if headers:
+        if headers and not is_generic_headers(headers):
             return headers[:column_count], llm_confidence
+        # LLM returned generic headers — treat as failure
+        print(f"  LLM returned generic headers, skipping prepend for this attempt.")
     except Exception as exc:
         print(f"Warning: failed to generate suggested headers: {exc}")
 
-    return [f"col_{i}" for i in range(column_count)], 0.5
+    # Fallback — generic, caller should check with is_generic_headers()
+    return [f"col_{i}" for i in range(column_count)], 0.0  # confidence 0.0 signals failure
 
 
-def generate_header_suggestions_with_retry(file_path, file_type, initial_rows, filename, confidence, model=None, low_confidence_threshold=0.75, retry_extra_rows=10):
+def is_generic_headers(headers: list) -> bool:
+    """
+    Returns True if headers look like fallback col_N labels — 
+    either from the LLM or from our own fallback.
+    We don't want to write these into the actual file.
+    """
+    if not headers:
+        return True
+    generic_pattern = re.compile(r"^col[_\s]?\d+$", re.IGNORECASE)
+    generic_count = sum(1 for h in headers if generic_pattern.match(str(h).strip()))
+    # Flag if more than half are generic
+    return generic_count / len(headers) > 0.5
+
+def generate_header_suggestions_with_retry(file_path, file_type, initial_rows, filename, confidence, model=None, low_confidence_threshold=0.75, retry_extra_rows=5, spark=None):
     """Call LLM for header suggestions; if confidence is low, retry with more rows."""
     headers, llm_confidence = generate_header_suggestions(initial_rows, model=model, filename=filename, confidence=confidence)
 
@@ -428,6 +502,7 @@ def generate_header_suggestions_with_retry(file_path, file_type, initial_rows, f
         headers, llm_confidence = generate_header_suggestions(extended_rows, model=model, filename=filename, confidence=confidence)
 
     return headers, llm_confidence
+
 
 def infer_schema_for_file(spark, file_path, file_type):
     file_type = file_type.upper()
@@ -488,13 +563,13 @@ def build_schema_inventory(spark, inventory_path, output_path=None):
 
         if file_type == "CSV":
             try:
-                sample_rows = read_sample_rows(file_path, file_type, max_rows=6)
+                sample_rows = read_sample_rows_auto(file_path, file_type, max_rows=6)
                 has_header, confidence, needs_llm_review, detection_reason = detect_header_with_confidence(sample_rows)
             except Exception as e:
                 detection_reason = f"Error during detection: {str(e)}"
         elif file_type in {"XLSX", "XLS"}:
             try:
-                sample_rows = read_sample_rows(file_path, file_type, max_rows=6)
+                sample_rows = read_sample_rows_auto(file_path, file_type, max_rows=6)
                 has_header, confidence, needs_llm_review, detection_reason = detect_header_with_confidence(sample_rows)
             except Exception as e:
                 detection_reason = f"Error during detection: {str(e)}"
@@ -502,15 +577,22 @@ def build_schema_inventory(spark, inventory_path, output_path=None):
         if not file_path or not os.path.isfile(file_path):
             schema_array = []
         elif not has_header:
-            # No header detected - generate header suggestions
-            sample_rows = read_sample_rows(file_path, file_type, max_rows=5)
-            generated_headers, llm_confidence = generate_header_suggestions_with_retry(file_path, file_type, sample_rows, filename=filename, confidence=confidence)
-            confidence = llm_confidence  # Use LLM's confidence
+            sample_rows = read_sample_rows_auto(file_path, file_type, max_rows=5, spark=spark)
+            generated_headers, llm_confidence = generate_header_suggestions_with_retry(
+                file_path, file_type, sample_rows, filename=filename, confidence=confidence, spark=spark
+            )
+            confidence = llm_confidence
+
+            # Only write if LLM gave real headers (confidence > 0 and not generic)
+            if generated_headers and llm_confidence > 0.0 and not is_generic_headers(generated_headers):
+                write_headers_to_file(file_path, file_type, generated_headers)
+            else:
+                print(f"  Skipping header write — headers are generic or LLM failed for {filename}")
         elif needs_llm_review:
             # Header detected but ambiguous - ask LLM to verify the first row interpretation
-            sample_rows = read_sample_rows(file_path, file_type, max_rows=10)
+            sample_rows = read_sample_rows_auto(file_path, file_type, max_rows=10, spark=spark)
             print(f" Flagged for LLM review (confidence={confidence:.2f}): {detection_reason}")
-            generated_headers, llm_confidence = generate_header_suggestions_with_retry(file_path, file_type, sample_rows, filename=filename, confidence=confidence, model=None)
+            generated_headers, llm_confidence = generate_header_suggestions_with_retry(file_path, file_type, sample_rows, filename=filename, confidence=confidence, model=None, spark=spark)
             confidence = llm_confidence  # Use LLM's confidence
         else:
             # Clear header - infer schema normally
@@ -551,13 +633,49 @@ def build_schema_inventory(spark, inventory_path, output_path=None):
         print(f" {flagged_count} file(s) flagged for LLM review due to ambiguous header detection")
 
 
+def write_headers_to_file(file_path, file_type, headers):
+    """
+    Prepend generated headers directly into the data file in-place.
+    After this runs, the file is a normal headed CSV — data_cleaner needs no special logic.
+    """
+    file_type = file_type.upper()
+    try:
+        if file_type == "CSV":
+            df = pd.read_csv(file_path, header=None, dtype=str, encoding="utf-8",
+                             on_bad_lines="skip")
+            if len(headers) == df.shape[1]:
+                df.columns = headers
+            else:
+                # Pad or trim to match actual column count
+                padded = (headers + [f"col_{i}" for i in range(df.shape[1])])[:df.shape[1]]
+                df.columns = padded
+            df.to_csv(file_path, index=False, encoding="utf-8")
+            print(f"  Headers written to file: {file_path}")
+
+        elif file_type in {"XLSX", "XLS"}:
+            df = pd.read_excel(file_path, header=None, dtype=str)
+            if len(headers) == df.shape[1]:
+                df.columns = headers
+            else:
+                padded = (headers + [f"col_{i}" for i in range(df.shape[1])])[:df.shape[1]]
+                df.columns = padded
+            df.to_excel(file_path, index=False)
+            print(f"  Headers written to file: {file_path}")
+
+        else:
+            print(f"  Skipping header write for unsupported type: {file_type}")
+
+    except Exception as e:
+        print(f"  [WARN] Could not write headers to {file_path}: {e}")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Append schema metadata to a file inventory CSV.")
     parser.add_argument("inventory_csv", help="Path to the inventory CSV file")
     parser.add_argument("--output", help="Path to write the enriched CSV output (optional)")
     args = parser.parse_args()
 
-    spark = SparkSession.builder.appName("AddSchemaToInventory").getOrCreate()
+    spark = SparkSession.builder.appName("AddSchemaToInventory").master("local[*]") \
+        .config("spark.scheduler.mode", "FAIR").getOrCreate()
 
     build_schema_inventory(spark, args.inventory_csv, args.output)
 
