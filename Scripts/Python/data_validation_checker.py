@@ -30,7 +30,7 @@ Usage
       --report-path     Output/mangled_rows_summary.csv \
       --quarantine-path Output/quarantined_rows.csv \
       --max-shift       5 \
-      --llm-batch       10 \
+      --llm-batch       50 \
       --use-spark
 
   # Detect only, no file writes
@@ -61,6 +61,9 @@ import pandas as pd
 from scipy import stats
 from tqdm import tqdm
 
+import transformers
+from transformers import AutoTokenizer
+import requests.exceptions
 # ─────────────────────────────────────────────────────────────────
 #  CONSTANTS  —  confirmed from your file_inventory_deviation.csv
 # ─────────────────────────────────────────────────────────────────
@@ -70,14 +73,14 @@ ENCODING           = "UTF-8"
 FALLBACK_ENCODINGS = ["latin-1", "cp1252", "iso-8859-1"]
 
 # Characters that cause row shifts in web-scraped data
-SUSPICIOUS_CHARS = ["\n", "\r", "%20", "\\n", "\\r", "\x00", "\t", ",", "<br>", "<br/>", "<br />", "<b>", "</b>"]
+SUSPICIOUS_CHARS = ["\n", "\r", "%20", "\\n", "\\r", "\x00", "\t", "<br>", "<br/>", "<br />", "<b>", "</b>"]
 
 # ─────────────────────────────────────────────────────────────────
 #  TIER 1 THRESHOLDS  —  tune these if detection is too noisy/loose
 # ─────────────────────────────────────────────────────────────────
-AVG_HEADER_RATIO_THRESHOLD = 0.60   # flag if |non_null_fields/n_headers - 1| > this
-TYPE_SHIFT_THRESHOLD       = 0.40   # flag if >40% of cells have wrong type vs column mode
-FIELD_COUNT_ZSCORE         = 3.0    # flag if field-count z-score exceeds this
+AVG_HEADER_RATIO_THRESHOLD = 0.30   # flag if |non_null_fields/n_headers - 1| > this
+TYPE_SHIFT_THRESHOLD       = 0.60   # flag if >40% of cells have wrong type vs column mode
+FIELD_COUNT_ZSCORE         = 4.0    # flag if field-count z-score exceeds this
 
 logging.basicConfig(
     level=logging.INFO,
@@ -234,7 +237,7 @@ def tier2_repair(raw_line: str, row_vals: list, n_headers: int, max_shift: int):
     # 2b
     cleaned = raw_line
     for sc in SUSPICIOUS_CHARS:
-        cleaned = cleaned.replace(sc, " ")
+        cleaned = cleaned.replace(sc, "")
     if cleaned != raw_line:
         result = clevercsv_reparse(cleaned, n_headers)
         if result:
@@ -275,6 +278,139 @@ def load_llm():
 
     log.info(f"Loaded LLM: {module_name}()")
     return mod, fn
+
+
+def estimate_prompt_tokens(headers: list, rows: list) -> int:
+    """Rough token estimate for sizing batches."""
+    header_tokens = len(headers) * 1.3
+    row_tokens = sum(len(str(v)) for row in rows for v in row) / 4  # rough: 4 chars per token
+    overhead = 200
+    return int(header_tokens + row_tokens + overhead)
+
+def estimate_prompt_tokens_accurate(headers: list, rows: list) -> int:
+    """Exact token count using Qwen tokenizer."""
+    try:
+        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B")
+        prompt = build_repair_prompt(headers, rows)
+        return len(tokenizer.encode(prompt))
+    except Exception as e:
+        log.debug(f"Accurate tokenization failed: {e}, using rough estimate")
+        return estimate_prompt_tokens(headers, rows)
+
+
+def llm_repair_paginated(headers: list, all_rows: list, llm_fn, max_tokens: int = 12800, max_retries: int = 3) -> dict:
+    """Token-aware batching with recursive retry-on-timeout."""
+    if llm_fn is None:
+        return {i: (None, "llm_unavailable") for i in range(len(all_rows))}
+
+    results = {}
+    batch_start = 0
+    
+    while batch_start < len(all_rows):
+        batch = []
+        
+        # Greedily add rows while under token limit
+        for i in range(batch_start, len(all_rows)):
+            test_batch = all_rows[batch_start : i + 1]
+            test_tokens = estimate_prompt_tokens(headers, test_batch)
+            
+            if test_tokens > max_tokens and batch:
+                break
+            batch = test_batch
+        
+        if not batch:
+            batch = [all_rows[batch_start]]
+            batch_start += 1
+        else:
+            batch_start += len(batch)
+        
+        batch_tokens_exact = estimate_prompt_tokens_accurate(headers, batch)
+        log.info(f"  LLM batch: {len(batch)} rows, ~{batch_tokens_exact} tokens")
+        
+        # Send batch with retry logic
+        batch_results = send_batch_with_retry(
+            headers, batch, llm_fn, 
+            batch_start - len(batch),  # global batch start index
+            max_retries=max_retries
+        )
+        results.update(batch_results)
+    
+    return results
+
+
+def send_batch_with_retry(headers: list, batch: list, llm_fn, global_start_idx: int, max_retries: int = 3, retry_count: int = 0) -> dict:
+    """
+    Send batch to LLM with timeout retry logic.
+    On timeout, recursively retry with half the batch.
+    """
+    results = {}
+    
+    if not batch:
+        return results
+    
+    prompt = build_repair_prompt(headers, batch)
+    
+    try:
+        messages = [{"role": "user", "content": prompt}]
+        raw = llm_fn(messages)
+        raw = re.sub(r"```(?:json)?|```", "", raw).strip()
+        parsed = json.loads(raw)
+        
+        for item in parsed:
+            local_idx  = int(item["row_id"].replace("ROW_", ""))
+            global_idx = global_start_idx + local_idx
+            repaired   = item.get("repaired")
+            confidence = item.get("confidence", "unknown")
+            
+            if isinstance(repaired, list) and len(repaired) == len(headers):
+                results[global_idx] = (repaired, confidence)
+            else:
+                results[global_idx] = (None, confidence)
+        
+        return results
+        
+    except requests.exceptions.Timeout:
+        retry_count += 1
+        
+        if retry_count >= max_retries:
+            log.warning(f"Batch {global_start_idx}–{global_start_idx+len(batch)-1} timed out after {max_retries} retries — quarantining")
+            for i in range(len(batch)):
+                results[global_start_idx + i] = (None, "timeout_max_retries")
+            return results
+        
+        # Halve the batch and retry
+        half = len(batch) // 2
+        log.warning(f"Timeout on {len(batch)} rows (retry {retry_count}/{max_retries}), splitting in half...")
+        
+        if half == 0:
+            # Single row timed out — can't halve further
+            log.error(f"Single row {global_start_idx} timed out, cannot recover")
+            results[global_start_idx] = (None, "timeout_single_row")
+            return results
+        
+        # Recursively retry both halves
+        first_half = send_batch_with_retry(
+            headers, batch[:half], llm_fn, global_start_idx, max_retries, retry_count
+        )
+        second_half = send_batch_with_retry(
+            headers, batch[half:], llm_fn, global_start_idx + half, max_retries, retry_count
+        )
+        
+        results.update(first_half)
+        results.update(second_half)
+        return results
+        
+    except json.JSONDecodeError as e:
+        log.error(f"JSON parse error in batch {global_start_idx}–{global_start_idx+len(batch)-1}: {e}")
+        for i in range(len(batch)):
+            results[global_start_idx + i] = (None, "json_error")
+        return results
+        
+    except Exception as e:
+        log.error(f"Batch {global_start_idx}–{global_start_idx+len(batch)-1} failed: {e}")
+        for i in range(len(batch)):
+            results[global_start_idx + i] = (None, "llm_error")
+        return results
 
 
 def build_repair_prompt(headers: list, bad_rows: list) -> str:
@@ -485,7 +621,7 @@ def process_file(filename: str, file_path: str, args, llm_fn):
     if needs_llm and not args.dry_run:
         log.info(f"  Tier 3 → escalating {len(needs_llm)} rows to LLM")
         raw_for_llm = [raw for _, raw, _ in needs_llm]
-        llm_results = llm_repair_batch(headers, raw_for_llm, llm_fn, args.llm_batch)
+        llm_results = llm_repair_paginated(headers, raw_for_llm, llm_fn, max_tokens=12800)
 
         for local_i, (df_idx, _, reasons) in enumerate(needs_llm):
             repaired, confidence = llm_results.get(local_i, (None, "missing"))
@@ -608,8 +744,8 @@ def process_file_spark(filename: str, file_path: str, args, llm_fn):
 
     if needs_llm and not args.dry_run:
         log.info(f"  Tier 3 (Spark path) → escalating {len(needs_llm)} rows to LLM")
-        llm_results = llm_repair_batch(
-            headers, [r for _, r, _ in needs_llm], llm_fn, args.llm_batch
+        llm_results = llm_repair_paginated(
+            headers, [r for _, r, _ in needs_llm], llm_fn
         )
         quarantine_indices = []
         for li, (df_idx, _, reasons) in enumerate(needs_llm):
@@ -763,10 +899,10 @@ def parse_args():
         "--max-shift", type=int, default=5,
         help="Max columns to try shifting left/right in Tier 2"
     )
-    p.add_argument(
-        "--llm-batch", type=int, default=10,
-        help="Number of rows per LLM API call in Tier 3"
-    )
+    # p.add_argument(
+    #     "--llm-batch", type=int, default=10,
+    #     help="Number of rows per LLM API call in Tier 3"
+    # )
     p.add_argument(
         "--use-spark", action="store_true",
         help="Load files via Spark (falls back to pandas if PySpark unavailable)"

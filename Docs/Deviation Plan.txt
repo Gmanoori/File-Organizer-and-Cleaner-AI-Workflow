@@ -13,3 +13,6 @@ Extra: Δentropy% = |H(t) − H(t-1)| / H_max × 100
 
 Run this now:
 python .\data_integrity_scanner_spark.py "E:\Ganesh-Projects\File-Organizer-and-Cleaner-AI-Workflow\Sample\Sample Output\file_inventory.csv" "E:\Ganesh-Projects\File-Organizer-and-Cleaner-AI-Workflow\Sample\Sample Output\file_inventory_deviation_final.csv"
+
+
+███████████████ 

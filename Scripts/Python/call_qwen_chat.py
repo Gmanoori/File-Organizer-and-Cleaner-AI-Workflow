@@ -12,7 +12,7 @@ load_dotenv()  # Loads variables from .env
 # api_key = os.getenv("HF_TOKEN")
 
 
-def call_gemma_chat(messages, model=None):
+def call_qwen_chat(messages, model=None):
     # api_key = os.environ.get("HF_TOKEN")
     # if not api_key:
     #     raise RuntimeError(
@@ -21,7 +21,7 @@ def call_gemma_chat(messages, model=None):
 
     API_URL = "http://localhost:11434/v1/chat/completions"
 
-    model = model or os.environ.get("GEMMA_MODEL", "qwen2.5-coder:7b")
+    model = model or os.environ.get("QWEN_MODEL", "qwen2.5-coder:7b")
 
     payload = {
         "messages": messages,
@@ -44,7 +44,7 @@ def call_gemma_chat(messages, model=None):
                 print(f"  Timeout on attempt {attempt + 1}/{MAX_RETRIES}, retrying in {wait}s...")
                 time.sleep(wait)
                 continue
-            raise RuntimeError(f"Gemma request failed after {MAX_RETRIES} attempts: read timeout") from None
+            raise RuntimeError(f"Qwen request failed after {MAX_RETRIES} attempts: read timeout") from None
 
         except requests.exceptions.RequestException as exc:
             try:
@@ -56,13 +56,13 @@ def call_gemma_chat(messages, model=None):
             if hasattr(exc, "response") and exc.response is not None:
                 status = exc.response.status_code
                 if status in (400, 401, 403, 422):
-                    raise RuntimeError(f"Gemma request failed (no retry on {status}): {exc}") from exc
+                    raise RuntimeError(f"Qwen request failed (no retry on {status}): {exc}") from exc
             if attempt < MAX_RETRIES - 1:
                 wait = RETRY_DELAYS[attempt]
                 print(f"  Request error on attempt {attempt + 1}/{MAX_RETRIES}, retrying in {wait}s...")
                 time.sleep(wait)
                 continue
-            raise RuntimeError(f"Gemma request failed: {exc}") from exc
+            raise RuntimeError(f"Qwen request failed: {exc}") from exc
 
         except KeyError as exc:
             raise RuntimeError(f"Unexpected response format: {exc}") from exc

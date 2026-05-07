@@ -392,10 +392,16 @@ def read_sample_rows_auto(file_path, file_type, max_rows=10, spark=None):
 
 
 def format_sample_rows(sample_rows, max_cell_len=50):
-    """Truncate long cell values to keep prompts short and avoid timeouts."""
     rows = []
     for row in sample_rows:
-        cells = [str(v)[:max_cell_len] for v in row]
+        cells = []
+        for v in row:
+            val = str(v).strip()
+            # Normalize empties/nulls to explicit placeholder
+            if val.lower() in ("", "nan", "none", "null", "n/a"):
+                cells.append("<empty>")
+            else:
+                cells.append(val.replace("|", "").strip()[:max_cell_len])
         rows.append(" | ".join(cells))
     return "\n".join(rows)
 
@@ -434,17 +440,27 @@ def generate_header_suggestions(sample_rows, model=None, filename=None, confiden
 
     column_count = len(sample_rows[0])
     sample_text = format_sample_rows(sample_rows)
+    # print(sample_rows)
     system_message = {
         "role": "system",
         "content": (
-            "You are a helpful assistant that suggests column headers for tabular data. "
-            "Return a JSON object with 'headers' as an array of strings and 'confidence' as a number from 0.1 to 1.0."
+        "You are a data expert. Generate column headers from sample rows. "
+        "The following rows are malformed due to column shifts, embedded newlines, URL-encoded characters (%20 etc), or web scraping artifacts."
+        "Empty cells are shown as <empty> — they still occupy a column position."
+        "Do NOT skip or merge columns because a cell is <empty>. "
+        """ Return ONLY a JSON object with 'headers' as an array and 'confidence' as a float 0.1-1.0. As such: {"headers": [...], "confidence": 0.0–1.0} """
         ),
     }
     
     # Build user message with filename context if available
     user_content = (
-        f"I have an unlabeled table with {column_count} columns and up to {len(sample_rows)} rows. \nIMPORTANT: Return EXACTLY {column_count} headers in the array — one per column, no more, no less."
+        f"Analyze these {len(sample_rows)} sample rows from a file named '{filename}'. "
+        f"The table has EXACTLY {column_count} columns. "
+        f"Look at the actual values in each column position and infer what that column represents. "
+        f"Row 0 is sample data, not headers. "
+        f"Return exactly {column_count} header names.\n\n"
+        f"Sample data:\n{sample_text}\n\n"
+        f"Think column by column — what do the values in column 1 look like? Column 2? etc."
     )
     if filename:
         user_content += f" The data comes from a file named '{filename}'. Use this context to infer likely column meanings (e.g., 'contacts.csv' suggests names/emails)."
@@ -455,8 +471,8 @@ def generate_header_suggestions(sample_rows, model=None, filename=None, confiden
     if confidence <= 0.85:
         user_content += " Note: Detection confidence is low, so be cautious with interpretations and prefer generic headers if ambiguous. "
     user_content += (
-        "Return exactly one JSON object with 'headers' as an array of strings (one per column) and 'confidence' as a number from 0.1 to 1.0 indicating your certainty. "
-        "Here are the sample rows:\n" + sample_text
+        "Return exactly one JSON object with 'headers' as an array of strings (one per column) and 'confidence' as a number from 0.1 to 1.0 indicating your certainty. Please attempt to generate the headers again. "
+        # "Here are the sample rows:\n" + sample_text
     )
     
     user_message = {
@@ -466,7 +482,11 @@ def generate_header_suggestions(sample_rows, model=None, filename=None, confiden
 
     try:
         completion_text = call_chat([system_message, user_message], model=model)
+        print("\n--- RAW LLM OUTPUT ---\n")
+        print(completion_text)
+        print("\n----------------------\n")
         headers, llm_confidence = parse_json_response(completion_text)
+        print(f"  LLM suggested headers: {headers} with confidence {llm_confidence:.2f}")
         if headers and not is_generic_headers(headers):
             return headers[:column_count], llm_confidence
         # LLM returned generic headers — treat as failure
@@ -489,9 +509,9 @@ def is_generic_headers(headers: list) -> bool:
     generic_pattern = re.compile(r"^col[_\s]?\d+$", re.IGNORECASE)
     generic_count = sum(1 for h in headers if generic_pattern.match(str(h).strip()))
     # Flag if more than half are generic
-    return generic_count / len(headers) > 0.5
+    return generic_count / len(headers) > 0.1
 
-def generate_header_suggestions_with_retry(file_path, file_type, initial_rows, filename, confidence, model=None, low_confidence_threshold=0.75, retry_extra_rows=5, spark=None):
+def generate_header_suggestions_with_retry(file_path, file_type, initial_rows, filename, confidence, model=None, low_confidence_threshold=0.75, retry_extra_rows=7, spark=None):
     """Call LLM for header suggestions; if confidence is low, retry with more rows."""
     headers, llm_confidence = generate_header_suggestions(initial_rows, model=model, filename=filename, confidence=confidence)
 
