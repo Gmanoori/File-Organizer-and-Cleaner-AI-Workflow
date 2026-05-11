@@ -21,6 +21,7 @@ httplib2==0.31.2
 idna==3.11
 numpy==2.4.4
 openpyxl==3.1.5
+ollama==0.6.1
 pandas==3.0.2
 proto-plus==1.27.2
 protobuf==5.29.6
@@ -39,6 +40,7 @@ requests==2.33.1
 scipy
 six==1.17.0
 smmap==5.0.3
+transformers==4.37.0
 tqdm==4.67.3
 typing-extensions==4.15.0
 typing-inspection==0.4.2
