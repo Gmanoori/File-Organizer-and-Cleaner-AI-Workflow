@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  pipeline:
+    build: .
+    container_name: pipeline_poc
+    volumes:
+      - ./data:/app/data
+      - ./storage:/app/storage
+      - ./src:/app/src
+    tty: true
+    stdin_open: true
+    command: /bin/bash
+    restart: always

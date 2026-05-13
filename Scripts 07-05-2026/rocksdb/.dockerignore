@@ -1,0 +1,20 @@
+# Ignore the local database files (mounted via volume instead)
+rocksdb_files/
+rocks_db/
+
+# Python artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment
+.env
+.venv
+env/
+venv/
+
+# Docker files
+docker-compose.yml
+Dockerfile
+.dockerignore
