@@ -37,11 +37,34 @@ def query_huggingface(data, token, file_name, col_count):
     
     # Prompt updated based on user requirements
     prompt = (
-        f"Look at this data from a CSV file named '{file_name}' and generate possible headers for the same. "
-        f"Return exactly {col_count} headers as a comma-separated list, which matches the column count of the data.\n\n"
-        f"Data (first 5 rows):\n{json.dumps(data, indent=2)}\n\n"
-        "Suggested Headers:"
-    )
+    "You are repairing malformed CSV rows.\n\n"
+    
+    f"TARGET CSV SCHEMA:\n{header}\n\n"
+    
+    f"MALFORMED CSV ROW:\n{raw_row}\n\n"
+    
+    "The row may contain:\n"
+    "- shifted columns\n"
+    "- extra delimiters\n"
+    "- broken commas\n"
+    "- malformed quoting\n"
+    "- encoding corruption\n\n"
+    
+    "Your task:\n"
+    "- Repair the malformed row\n"
+    "- Match the schema EXACTLY\n"
+    "- Preserve as much information as possible\n"
+    "- Return EXACTLY the same number of columns as the schema\n"
+    "- Maintain valid CSV formatting\n\n"
+    
+    "STRICT RULES:\n"
+    "- Return ONLY the repaired CSV row\n"
+    "- No explanations\n"
+    "- No markdown\n"
+    "- No code blocks\n"
+    "- No extra text\n"
+    "- Output must be parseable by Python csv.reader\n"
+)
     
     payload = {
         "inputs": prompt,

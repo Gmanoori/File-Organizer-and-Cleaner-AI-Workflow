@@ -1,66 +1,123 @@
-volumes:
-  postgres-data:
-    driver: local
-  kestra-data:
-    driver: local
+version: '3.8'
+x-airflow-common:
+  &airflow-common
+  build:
+    context: .
+    dockerfile: ./docker/Dockerfile
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
+    AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+    AIRFLOW__SCHEDULER__STATSD_ON: 'false'
+    PYTHONPATH: /opt/airflow/Pipeline/Step_3_1:/opt/airflow/Pipeline/Step_4_4
+  volumes:
+    - ./docker/dags:/opt/airflow/dags
+    - ./docker/logs:/opt/airflow/logs
+    - ./docker/plugins:/opt/airflow/plugins
+    - ./Pipeline:/opt/airflow/Pipeline
+    - ./Data:/opt/airflow/Data
+    - ./Cleaned:/opt/airflow/Cleaned
+    - ./Organized Data:/opt/airflow/Organized_Data
+    - ./Remaining:/opt/airflow/Remaining
+    - ./Sample:/opt/airflow/Sample
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    redis:
+      condition: service_healthy
+    postgres:
+      condition: service_healthy
 
 services:
   postgres:
-    image: postgres:18
-    volumes:
-      - postgres-data:/var/lib/postgresql
+    image: postgres:13
     environment:
-      POSTGRES_DB: kestra
-      POSTGRES_USER: kestra
-      POSTGRES_PASSWORD: k3str4
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
-      interval: 30s
-      timeout: 10s
-      retries: 10
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
 
-  kestra:
-    image: kestra/kestra:latest
-    pull_policy: always
-    # Kestra, by default, has a termination grace period of 5m. We need to wait a little more to be sure no active tasks are running.
-    stop_grace_period: 6m
-    # Note that this setup with a root user is intended for development purpose.
-    # Our base image runs without root, but the Docker Compose implementation needs root to access the Docker socket
-    user: "root"
-    command: server standalone
-    volumes:
-      - kestra-data:/app/storage
-      - /var/run/docker.sock:/var/run/docker.sock
-      - /tmp/kestra-wd:/tmp/kestra-wd
-      - "/mnt/c/programs/700GB Cleaning Shi/Sample/Sample Run:/data/source"
-    environment:
-      KESTRA_CONFIGURATION: |
-        datasources:
-          postgres:
-            url: jdbc:postgresql://postgres:5432/kestra
-            driverClassName: org.postgresql.Driver
-            username: kestra
-            password: k3str4
-        kestra:
-          server:
-            basic-auth:
-              username: hackermansquared@gmail.com # it must be a valid email address
-              password: Password@1100 # it must be at least 8 characters long with uppercase letter and a number
-          repository:
-            type: postgres
-          storage:
-            type: local
-            local:
-              base-path: "/app/storage"
-          queue:
-            type: postgres
-          tasks:
-            tmp-dir:
-              path: /tmp/kestra-wd/tmp
-          url: http://localhost:8080/
+  redis:
+    image: redis:7.2-bookworm
+    expose:
+      - 6379
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
     ports:
       - "8080:8080"
-      - "8081:8081"
-    depends_on:
-      postgres:
-        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: always
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: always
+
+  airflow-worker:
+    <<: *airflow-common
+    command: celery worker
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"'
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: always
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: always
+
+  airflow-init:
+    <<: *airflow-common
+    command: version
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+    user: "0:0"
+    volumes:
+      - ./docker/dags:/opt/airflow/dags
+      - ./docker/logs:/opt/airflow/logs
+      - ./docker/plugins:/opt/airflow/plugins
+
+volumes:
+  postgres-db-volume:

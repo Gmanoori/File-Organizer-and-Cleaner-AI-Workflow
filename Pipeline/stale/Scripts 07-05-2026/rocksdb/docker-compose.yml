@@ -8,6 +8,9 @@ services:
       - ./data:/app/data
       - ./storage:/app/storage
       - ./src:/app/src
+      - ./output:/app/output
+    env_file:
+      - ../../.env
     tty: true
     stdin_open: true
     command: /bin/bash

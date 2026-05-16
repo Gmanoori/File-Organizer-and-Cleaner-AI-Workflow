@@ -11,7 +11,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Create directories
-RUN mkdir -p data storage src
+RUN mkdir -p data storage src output
 
 
 CMD ["bash"]
