@@ -155,7 +155,7 @@ def worker(file_path):
 def main():
     initialize_files()
     all_files = []
-    for root, dirs, files in os.walk('../Check'):
+    for root, dirs, files in os.walk('/opt/airflow/Organized_Data'):
         for file in files:
             all_files.append(os.path.join(root, file))
     
